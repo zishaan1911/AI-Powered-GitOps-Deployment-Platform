@@ -1,0 +1,12 @@
+# Optional overrides. Anything omitted falls back to platform defaults.
+port: 4000
+replicas: 3
+public: true
+resources:
+  cpuRequest: "150m"
+  memoryRequest: "192Mi"
+  cpuLimit: "750m"
+  memoryLimit: "768Mi"
+env:
+  - name: LOG_LEVEL, value: info
+  - name: DATABASE_URL, secretRef: sample-app-secrets/database-url
