@@ -46,7 +46,6 @@ jobs:
       # Go is compiled by CodeQL's autobuild; explicit build keeps this
       # working if the repo ever adds a non-standard build step.
       - name: Build
-        working-directory: gitops-ai-platform
         run: go build ./...
 
       - name: Perform CodeQL Analysis
