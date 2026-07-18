@@ -23,6 +23,7 @@ jobs:
           cache: true
 
       - name: gofmt check
+        working-directory: gitops-ai-platform
         run: |
           fmt_out="$(gofmt -l .)"
           if [ -n "$fmt_out" ]; then
@@ -32,15 +33,19 @@ jobs:
           fi
 
       - name: go vet
+        working-directory: gitops-ai-platform
         run: go vet ./...
 
       - name: Build
+        working-directory: gitops-ai-platform
         run: go build ./...
 
       - name: Test
+        working-directory: gitops-ai-platform
         run: go test ./... -v
 
       - name: govulncheck
+        working-directory: gitops-ai-platform
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
