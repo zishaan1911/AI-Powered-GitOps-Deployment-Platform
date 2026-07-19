@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitops-ai-platform
+---
+# Populate before applying:
+#   kubectl create secret generic gitops-ai-secrets -n gitops-ai-platform \
+#     --from-literal=gemini-api-key=$GEMINI_API_KEY \
+#     --from-literal=git-token=$GITOPS_REPO_TOKEN
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitops-ai-secrets
+  namespace: gitops-ai-platform
+type: Opaque
+stringData:
+  gemini-api-key: "REPLACE_ME"
+  git-token: "REPLACE_ME"
+---
+# Runs health-watcher for one app on a schedule. In practice, prefer
+# wiring this as an ArgoCD PostSync hook (fires right after a sync instead
+# of polling) — this CronJob form is the simplest thing that works and is
+# a reasonable starting point. Duplicate this Job spec per app, or template
+# it with Helm/Kustomize once you have more than a couple of apps onboarded.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: health-watcher-sample-app
+  namespace: gitops-ai-platform
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: gitops-ai-health-watcher
+          restartPolicy: Never
+          containers:
+            - name: health-watcher
+              image: ghcr.io/your-org/gitops-ai-platform:latest
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  git clone "https://x-access-token:${GIT_TOKEN}@github.com/your-org/gitops-repo.git" /tmp/gitops-repo
+                  /app/health-watcher \
+                    -namespace sample-app \
+                    -app sample-app \
+                    -deployment sample-app \
+                    -gitops-repo /tmp/gitops-repo \
+                    -auto-rollback -push
+              env:
+                - name: GEMINI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: gitops-ai-secrets
+                      key: gemini-api-key
+                - name: GIT_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: gitops-ai-secrets
+                      key: git-token
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { cpu: 250m, memory: 256Mi }

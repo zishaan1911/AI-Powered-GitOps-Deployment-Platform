@@ -1,0 +1,33 @@
+# RBAC for health-watcher. Scoped to read-only on pods/events/deployments —
+# it never writes to the cluster (rollback happens via git revert + ArgoCD
+# sync, not kubectl).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitops-ai-health-watcher
+  namespace: gitops-ai-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitops-ai-health-watcher
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitops-ai-health-watcher
+subjects:
+  - kind: ServiceAccount
+    name: gitops-ai-health-watcher
+    namespace: gitops-ai-platform
+roleRef:
+  kind: ClusterRole
+  name: gitops-ai-health-watcher
+  apiGroup: rbac.authorization.k8s.io

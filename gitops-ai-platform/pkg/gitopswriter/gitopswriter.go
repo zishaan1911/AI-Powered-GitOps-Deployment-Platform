@@ -151,6 +151,47 @@ func gitOutput(repoPath string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// RevertRequest describes a rollback: revert the most recent commit(s)
+// touching an app's manifests in the GitOps repo. This is how
+// healthwatcher rolls back an unhealthy deploy — never by mutating the
+// cluster directly, always by committing the inverse change and letting
+// ArgoCD/Flux reconcile it, same as any other change.
+type RevertRequest struct {
+	GitopsRepoPath string
+	CommitMessage  string
+	Push           bool
+}
+
+// RevertLastCommit reverts HEAD in the GitOps repo (git revert --no-edit)
+// and optionally pushes. Returns the new commit SHA (the revert commit).
+func RevertLastCommit(req RevertRequest) (WriteResult, error) {
+	if req.GitopsRepoPath == "" {
+		return WriteResult{}, fmt.Errorf("GitopsRepoPath is required")
+	}
+
+	args := []string{"revert", "--no-edit", "HEAD"}
+	if req.CommitMessage != "" {
+		args = []string{"revert", "--no-edit", "-m", req.CommitMessage, "HEAD"}
+	}
+	if err := runGit(req.GitopsRepoPath, args...); err != nil {
+		return WriteResult{}, fmt.Errorf("git revert: %w", err)
+	}
+
+	sha, err := gitOutput(req.GitopsRepoPath, "rev-parse", "HEAD")
+	if err != nil {
+		return WriteResult{}, fmt.Errorf("git rev-parse: %w", err)
+	}
+	result := WriteResult{Committed: true, CommitSHA: strings.TrimSpace(sha)}
+
+	if req.Push {
+		if err := runGit(req.GitopsRepoPath, "push"); err != nil {
+			return result, fmt.Errorf("git push: %w", err)
+		}
+		result.Pushed = true
+	}
+	return result, nil
+}
+
 // ArgoApplication renders an ArgoCD Application resource pointing at the
 // path this package just wrote to. This is typically committed once per
 // app (not on every deploy) — callers generate it the first time an app

@@ -1,31 +1,40 @@
 # gitops-ai-platform
 
-Push code → get a running app, deployed via GitOps. This repo implements
-weeks 1–6 of the platform roadmap (see `docs/ARCHITECTURE.md`):
+Push code → get a running app, deployed via GitOps, watched and self-healed by AI.
 
 ```
-detect  →  containerize  →  generate manifests  →  commit to GitOps repo  →  (ArgoCD/Flux syncs)
+detect → containerize → generate manifests → AI risk review → commit to GitOps repo
+   → (ArgoCD/Flux syncs) → health-watcher monitors → unhealthy? AI root cause + auto-rollback
 ```
 
-AI (risk review + post-deploy root-cause analysis) is weeks 7–10 and not
-included here — everything in this repo is deterministic, template-based
-generation, which is intentional: manifest *shape* shouldn't be
-probabilistic, only judgment about whether the *values* are risky should be.
+Full roadmap (see `docs/ARCHITECTURE.md`) is implemented, weeks 1–10:
+
+- **Weeks 1–6**: detection, containerization, manifest generation, GitOps commit — all deterministic, template-based. See prior sections below.
+- **Weeks 7–8**: `pkg/riskreview` — static policy checks (resource limits, zero replicas, privileged containers, replica-jump blast radius) plus a Gemini-backed layer for contextual judgment calls (suspicious env vars, unusual diffs). AI findings are strictly additive to static findings and never silence them; if Gemini is unreachable, review fails closed to static-only rather than skipping review.
+- **Weeks 9–10**: `pkg/healthwatcher` — watches rollout health via `kubectl`, and on failure gathers pod/event evidence, asks Gemini for a plain-English root cause, and can auto-rollback by `git revert`-ing the last GitOps commit (never a direct cluster mutation).
+
+**Deploying this for real:** see `DEPLOYMENT.md`.
 
 ## Components
 
-| Path | What it does |
-|---|---|
-| `pkg/detector` | Inspects a repo, infers language/framework/entrypoint/port |
-| `pkg/containerizer` | Generates a Dockerfile from the detected service |
-| `pkg/platformconfig` | Reads optional `platform.yaml` overrides from the app repo |
-| `pkg/manifest` | Generates Deployment/Service/Ingress/Kustomization YAML |
-| `pkg/gitopswriter` | Commits generated manifests to a GitOps repo; renders the ArgoCD `Application` |
-| `cmd/pipeline` | Runs all of the above end-to-end |
-| `cmd/detector`, `cmd/containerizer`, `cmd/manifest-generator`, `cmd/gitops-writer` | Same stages as standalone CLIs, for scripting/debugging one stage at a time |
-| `examples/sample-app` | A minimal Express app used to exercise the whole pipeline |
+| Path | What it does | AI involved? |
+|---|---|---|
+| `pkg/detector` | Inspects a repo, infers language/framework/entrypoint/port | No |
+| `pkg/containerizer` | Generates a Dockerfile from the detected service | No |
+| `pkg/platformconfig` | Reads optional `platform.yaml` overrides from the app repo | No |
+| `pkg/manifest` | Generates Deployment/Service/Ingress/Kustomization YAML | No |
+| `pkg/gitopswriter` | Commits manifests to a GitOps repo; renders the ArgoCD `Application`; reverts commits for rollback | No |
+| `pkg/gemini` | Minimal stdlib-only client for Gemini's structured-JSON output | — |
+| `pkg/riskreview` | Scores a manifest diff for risk before it's allowed to merge | Yes |
+| `pkg/healthwatcher` | Watches rollout health, root-causes failures, triggers rollback | Yes |
+| `cmd/pipeline` | Runs detect → containerize → manifest → commit end-to-end | |
+| `cmd/risk-reviewer` | Standalone CLI for the risk gate — meant to run as a CI/PR check | |
+| `cmd/health-watcher` | Standalone CLI — meant to run as a cluster CronJob/ArgoCD PostSync hook | |
+| `cmd/detector`, `cmd/containerizer`, `cmd/manifest-generator`, `cmd/gitops-writer` | Same stages as standalone CLIs, for scripting/debugging one stage at a time | |
+| `deploy/` | Dockerfile for the platform's own CLIs, plus K8s manifests (RBAC, CronJob) for `health-watcher` | |
+| `examples/sample-app` | A minimal Express app, including the GitHub Actions workflow an onboarded app repo actually runs | |
 
-## Quickstart
+## Quickstart (local, no cluster required)
 
 ```bash
 go build -o bin/pipeline ./cmd/pipeline
@@ -53,6 +62,25 @@ From there, ArgoCD/Flux — already watching that GitOps repo, unmodified —
 picks up the commit and reconciles the cluster. This platform never talks
 to the Kubernetes API directly; it only writes and commits files.
 
+## Risk review (Week 7-8)
+
+```bash
+export GEMINI_API_KEY=...  # optional; static checks run without it
+go build -o bin/risk-reviewer ./cmd/risk-reviewer
+./bin/risk-reviewer -app sample-app -new /tmp/gitops-repo/apps/sample-app/staging/deployment.yaml
+echo $?   # non-zero if risk score >= riskreview.ApprovalThreshold (60 by default)
+```
+
+## Health watching + rollback (Week 9-10)
+
+Requires a real cluster with `kubectl` configured (not exercisable in a sandbox without one):
+
+```bash
+go build -o bin/health-watcher ./cmd/health-watcher
+./bin/health-watcher -namespace sample-app -app sample-app \
+  -gitops-repo /tmp/gitops-repo -auto-rollback -push
+```
+
 ## `platform.yaml` (optional, lives in the app repo)
 
 ```yaml
@@ -74,18 +102,16 @@ Every field is optional — omitted fields fall back to platform defaults
 
 ## What's deliberately out of scope here
 
-- **Actual `docker build`/registry push** — wrap Kaniko or BuildKit in CI; not reimplemented here.
-- **Actual ArgoCD/Flux install or sync** — this repo produces the `Application` resource and the GitOps commits; reconciliation is ArgoCD/Flux's job, untouched.
-- **AI risk review, health watching, auto-rollback** — weeks 7–10. The manifest/Dockerfile generation here is intentionally template-based (not LLM-generated) so it's deterministic; the AI layer sits on top, reviewing the diff this pipeline produces before/after it lands.
+- **Actual `docker build`/registry push** — wrap Kaniko or BuildKit in CI (see the example workflow); not reimplemented here.
+- **Actual ArgoCD/Flux install or sync** — this repo produces the `Application` resource and the GitOps commits; reconciliation is ArgoCD/Flux's job, untouched. Install steps are in `DEPLOYMENT.md`.
+- **A general-purpose K8s API client** — `health-watcher` shells out to `kubectl` rather than depending on `client-go`, to keep the module dependency-free.
 
 ## Testing
 
 ```bash
 go build ./...
 go vet ./...
+go test ./... -v
 ```
 
-Package-level behavior is best verified by running `cmd/pipeline` against
-`examples/sample-app` as shown above and inspecting the generated files —
-there's no mocked Kubernetes cluster involved, so the fastest feedback loop
-is reading the generated Dockerfile/YAML directly.
+`pkg/gemini`, `pkg/riskreview`, and `pkg/healthwatcher`'s pure logic are all covered by tests that mock the Gemini API (`httptest`) or feed synthetic `kubectl`-shaped JSON — no live cluster or API key needed to run the suite. End-to-end pipeline behavior (Dockerfile/manifest generation, GitOps commits) is best verified by running `cmd/pipeline` against `examples/sample-app` and inspecting the output directly.

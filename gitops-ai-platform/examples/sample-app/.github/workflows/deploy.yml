@@ -1,0 +1,93 @@
+# This is what a developer's app repo runs — NOT the platform's own repo.
+# Copy this into any app repo you onboard onto the platform. It's the
+# concrete answer to "developer pushes code, AI handles the rest":
+#
+#   push to main  -> pipeline (detect/containerize/build/manifest/commit) -> risk gate
+#   pull request   -> risk-reviewer only, posted as a PR comment, nothing committed
+#
+# Secrets required in this repo's settings:
+#   GITOPS_REPO_TOKEN  - a token with push access to your GitOps repo
+#   GEMINI_API_KEY     - for the AI-augmented risk review layer (optional but recommended)
+#   REGISTRY_USERNAME / REGISTRY_PASSWORD - for pushing the built image
+name: Deploy via gitops-ai-platform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  APP_NAME: sample-app
+  GITOPS_REPO: https://github.com/your-org/gitops-repo.git
+  IMAGE: ghcr.io/your-org/sample-app
+
+jobs:
+  # Runs on every PR: score the risk of the change, comment the result,
+  # fail the check if risk is too high. Does not build or deploy anything.
+  risk-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up platform CLIs
+        uses: docker://ghcr.io/your-org/gitops-ai-platform:latest
+        with:
+          entrypoint: /bin/true # no-op; image is pulled for use below
+
+      - name: Generate candidate manifest (no commit)
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/your-org/gitops-ai-platform:latest \
+            /app/manifest-generator -repo /repo -app "$APP_NAME" -image "$IMAGE:pr-${{ github.event.pull_request.number }}" \
+            > /tmp/candidate.txt
+          awk '/--- deployment.yaml ---/{flag=1;next}/--- service.yaml ---/{flag=0}flag' /tmp/candidate.txt > /tmp/deployment.yaml
+
+      - name: Risk review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          docker run --rm -e GEMINI_API_KEY -v /tmp:/tmp ghcr.io/your-org/gitops-ai-platform:latest \
+            /app/risk-reviewer -app "$APP_NAME" -new /tmp/deployment.yaml
+
+  # Runs on push to main: full pipeline, gated by the same risk check
+  # before it's allowed to push to the GitOps repo.
+  deploy:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: app-repo
+
+      - name: Build & push image
+        run: |
+          IMAGE_TAG="$IMAGE:${{ github.sha }}"
+          docker build -t "$IMAGE_TAG" ./app-repo
+          echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ghcr.io -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
+          docker push "$IMAGE_TAG"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+
+      - name: Clone GitOps repo
+        run: |
+          git clone "https://x-access-token:${{ secrets.GITOPS_REPO_TOKEN }}@${GITOPS_REPO#https://}" gitops-repo
+
+      - name: Run pipeline (detect, containerize already done above, generate manifests)
+        run: |
+          docker run --rm -v "$PWD/app-repo:/app-repo" -v "$PWD/gitops-repo:/gitops-repo" \
+            ghcr.io/your-org/gitops-ai-platform:latest \
+            /app/pipeline -app-repo /app-repo -gitops-repo /gitops-repo \
+            -app "$APP_NAME" -image "$IMAGE_TAG" -env staging
+
+      - name: Risk gate before push
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          docker run --rm -e GEMINI_API_KEY -v "$PWD/gitops-repo:/gitops-repo" \
+            ghcr.io/your-org/gitops-ai-platform:latest \
+            /app/risk-reviewer -app "$APP_NAME" -new /gitops-repo/apps/$APP_NAME/staging/deployment.yaml
+
+      - name: Push to GitOps repo
+        run: |
+          cd gitops-repo
+          git push

@@ -1,0 +1,9 @@
+.git
+node_modules
+__pycache__
+*.pyc
+target
+build
+.env
+.env.local
+*.log
