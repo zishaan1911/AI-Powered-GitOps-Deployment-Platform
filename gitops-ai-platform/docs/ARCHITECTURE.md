@@ -120,13 +120,6 @@ gitops-ai-platform/
 3. **Week 5–6**: `gitops-writer` + ArgoCD integration — manifest lands in cluster via existing GitOps flow
 4. **Week 7–8**: `risk-reviewer` v1 — OPA policy checks + Gemini-based fuzzy review, posts findings as a PR comment
 5. **Week 9–10**: `health-watcher` — post-deploy monitoring + auto-revert + root-cause issue filing
-6. **Week 11+**: dashboard, docs, sample app, polish for public release
-
-**Demo-able earlier than that**: steps 1–3 alone already show "push code, get a live pod" which is a strong early demo before AI risk review is even built.
+6. **Week 11+**: dashboard, docs, sample app, polish for public release=
 
 ---
-
-## Open questions to settle before coding
-- Single-tenant (one cluster) or multi-tenant SaaS-shaped from day one? (Affects auth/isolation design significantly.)
-- Does `platform.yaml` live in the app repo (simple) or is it inferred entirely (harder, more AI-dependent)?
-- License: Apache-2.0 or MIT (standard for this space — ArgoCD is Apache-2.0, Flux is Apache-2.0).
